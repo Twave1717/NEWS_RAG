@@ -94,7 +94,7 @@ def get_news_from_list_page(driver, page_url):
 
 def get_news_detail(driver, article, status_placeholder=None):
     if status_placeholder:
-        status_placeholder.write(f"크롤링중: {article.get('title','(제목없음)')}")
+        status_placeholder.write(f"뉴스 불러오는 중: {article.get('title','(제목없음)')}")
     link = article.get("link", "")
     if not link.startswith("http"):
         link = "https://n.news.naver.com" + link
@@ -219,8 +219,8 @@ rag_chain = (
 # (3) Streamlit 메인 (streamlit-chat + 버튼 비활성화/로딩)
 ##################################################
 def main():
-    st.set_page_config(page_title="어제 증시 뉴스 (streamlit-chat)", layout="wide")
-    st.title("어제 증시 뉴스 챗봇")
+    st.set_page_config(page_title="미국 증시 챗봇 (Co-RAG)", layout="wide")
+    st.title("어제 미국증시 뉴스 챗봇")
 
     # 로딩 상태를 관리
     if "loading" not in st.session_state:
@@ -228,7 +228,7 @@ def main():
 
     # 1) 크롤링 & 인덱싱
     if "articles" not in st.session_state:
-        with st.spinner("뉴스 크롤링 및 인덱싱 중..."):
+        with st.spinner("뉴스 가져오는 중..."):
             articles = crawl_news()
             st.session_state["articles"] = articles
             st.session_state["retriever"] = create_retriever_from_articles(
@@ -239,8 +239,8 @@ def main():
     retriever = st.session_state["retriever"]
 
     # ------------------- 카드뷰 -------------------
-    with st.expander("크롤링된 뉴스 목록 (펼치기/접기)", expanded=False):
-        st.write(f"크롤링된 기사 수: {len(articles)}개")
+    with st.expander("불러온 뉴스 목록 (펼치기/접기)", expanded=False):
+        st.write(f"불러온 기사 수: {len(articles)}개")
 
         scroll_css = """
         <style>
