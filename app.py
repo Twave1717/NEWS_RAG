@@ -1,19 +1,20 @@
 import streamlit as st
+from streamlit_chat import message  # streamlit-chat 사용
 import time
 import os
 from datetime import datetime, timedelta
+import html
 
-# .env 로드 (LANGCHAIN_API_KEY 등)
 from dotenv import load_dotenv
 load_dotenv()
 
-# LangChain / Teddynote 관련
+# langchain-teddynote
 from langchain_teddynote import logging
 logging.langsmith("CH12-RAG")
 
 import bs4
 from langchain import hub
-# langchain_text_splitters 대신 langchain.text_splitter를 써야 할 수도 있음
+# (버전에 따라) langchain.text_splitter 사용 필요성 있음
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
@@ -21,7 +22,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-# --- Selenium 관련 ---
+# Selenium 관련
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -35,13 +36,12 @@ from webdriver_manager.chrome import ChromeDriverManager
 from langchain.schema import Document
 
 ##################################################
-# (1) 뉴스 크롤링 로직
+# (1) 뉴스 크롤링 로직 (변경 없음)
 ##################################################
 def get_total_pages(soup):
     navi_table = soup.find("table", class_="Nnavi")
     if not navi_table:
         return 1
-
     page_links = soup.find_all("a")
     max_page = 1
     for link_tag in page_links:
@@ -93,10 +93,8 @@ def get_news_from_list_page(driver, page_url):
     return articles, soup
 
 def get_news_detail(driver, article, status_placeholder=None):
-    # "크롤링중: 기사제목" 표시
     if status_placeholder:
-        status_placeholder.write(f"뉴스를 가져오는 중: {article.get('title','(제목없음)')}")
-
+        status_placeholder.write(f"크롤링중: {article.get('title','(제목없음)')}")
     link = article.get("link", "")
     if not link.startswith("http"):
         link = "https://n.news.naver.com" + link
@@ -119,9 +117,6 @@ def get_news_detail(driver, article, status_placeholder=None):
     return article
 
 def crawl_news():
-    """
-    '어제' 날짜의 해외 증시 뉴스 크롤링
-    """
     target_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
     base_url = (
         "https://finance.naver.com/news/news_list.naver"
@@ -140,21 +135,17 @@ def crawl_news():
     )
 
     status_placeholder = st.empty()
-
     all_articles = []
     try:
-        # 1페이지
         first_page_url = base_url + "&page=1"
         articles, soup = get_news_from_list_page(driver, first_page_url)
         total_pages = get_total_pages(soup)
         
-        # 2 ~ 마지막 페이지
         for page_num in range(2, total_pages + 1):
             page_url = f"{base_url}&page={page_num}"
             page_articles, _ = get_news_from_list_page(driver, page_url)
             articles.extend(page_articles)
 
-        # 상세 본문 크롤링 (실시간 기사제목 표시)
         for art in articles:
             get_news_detail(driver, art, status_placeholder=status_placeholder)
             time.sleep(0.05)
@@ -165,31 +156,22 @@ def crawl_news():
 
     return articles
 
-
 ##################################################
-# (2) RAG (Retrieval QA) 세팅
+# (2) RAG (변경 없음)
 ##################################################
 def create_retriever_from_articles(articles, status_placeholder=None):
-    """
-    크롤링된 기사들을 하나의 문서로 만들어 chunking하고,
-    FAISS 기반의 retriever 생성
-    """
     if status_placeholder:
         status_placeholder.write("인덱싱중...")
 
-    # 기사 전체를 하나의 텍스트로 합침
     all_text = ""
     for art in articles:
-        text_part = f"제목: {art['title']}\n날짜: {art['date']}\n{art.get('content','')}\n"
-        all_text += text_part + "\n\n"
+        one_text = f"제목: {art['title']}\n날짜: {art['date']}\n{art.get('content','')}\n"
+        all_text += one_text + "\n\n"
 
     docs = [Document(page_content=all_text)]
-
-    # chunking
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     splits = text_splitter.split_documents(docs)
 
-    # FAISS 벡터스토어
     vectorstore = FAISS.from_documents(splits, OpenAIEmbeddings())
     retriever = vectorstore.as_retriever()
 
@@ -198,7 +180,6 @@ def create_retriever_from_articles(articles, status_placeholder=None):
 
     return retriever
 
-# 프롬프트 템플릿
 prompt = PromptTemplate.from_template(
     """당신은 질문-답변(Question-Answering)을 수행하는 친절한 AI 어시스턴트입니다.
 
@@ -218,8 +199,11 @@ prompt = PromptTemplate.from_template(
 # Answer:"""
 )
 
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+from langchain_openai import ChatOpenAI
 
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
 rag_chain = (
     {
         "context": RunnablePassthrough(),
@@ -231,40 +215,33 @@ rag_chain = (
     | StrOutputParser()
 )
 
-
 ##################################################
-# (3) Streamlit 메인
+# (3) Streamlit 메인 (streamlit-chat + 버튼 비활성화/로딩)
 ##################################################
 def main():
-    st.set_page_config(page_title="어제 미국 증시 뉴스 챗봇", layout="wide")
-    st.title("어제 미국 증시 뉴스 챗봇")
+    st.set_page_config(page_title="어제 증시 뉴스 (streamlit-chat)", layout="wide")
+    st.title("어제 증시 뉴스 챗봇")
 
-    # ------------------------------------------------
-    # 1) 세션에 articles가 없으면 크롤링 & 인덱싱 실행
-    #    (같은 렌더링에서 UI가 이어서 표시되도록 st.stop() 사용 X)
-    # ------------------------------------------------
+    # 로딩 상태를 관리
+    if "loading" not in st.session_state:
+        st.session_state["loading"] = False
+
+    # 1) 크롤링 & 인덱싱
     if "articles" not in st.session_state:
-        with st.spinner("로딩중..."):
-            # (A) 크롤링
+        with st.spinner("뉴스 크롤링 및 인덱싱 중..."):
             articles = crawl_news()
             st.session_state["articles"] = articles
-
-            # (B) 인덱싱
             st.session_state["retriever"] = create_retriever_from_articles(
                 articles, status_placeholder=st.empty()
             )
 
-    # ------------------------------------------------
-    # 2) 크롤링 완료 이후, 카드뷰 + 챗봇 UI 표시
-    # ------------------------------------------------
     articles = st.session_state["articles"]
     retriever = st.session_state["retriever"]
 
-    # (A) 뉴스 카드뷰 (토글)
-    with st.expander("뉴스 기사 목록 (펼치기/접기)", expanded=False):
+    # ------------------- 카드뷰 -------------------
+    with st.expander("크롤링된 뉴스 목록 (펼치기/접기)", expanded=False):
         st.write(f"크롤링된 기사 수: {len(articles)}개")
 
-        # 카드뷰용 CSS
         scroll_css = """
         <style>
         .horizontal-scroll {
@@ -323,42 +300,65 @@ def main():
             st.markdown(card_html, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # (B) 챗봇 UI (RAG QA)
+    # ------------------- streamlit-chat -------------------
+    from streamlit_chat import message
+
     st.subheader("뉴스 기반 챗봇")
 
-    if "chat_history" not in st.session_state:
-        st.session_state["chat_history"] = []
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
 
     user_input = st.text_input("질문을 입력하세요", "")
-    if st.button("Send") and user_input.strip():
-        # 1) 사용자 메시지 저장
-        st.session_state["chat_history"].append({"role": "user", "content": user_input})
 
-        # 2) 최근 500자 추출
-        entire_chat_text = "".join(msg["content"] for msg in st.session_state["chat_history"])
-        last_500_chars = entire_chat_text[-500:]
+    # Send 버튼: 로딩중이면 disabled=True
+    send_btn = st.button("Send", disabled=st.session_state["loading"])
 
-        # 3) 문맥 검색
-        context_docs = retriever.get_relevant_documents(user_input)
-        context_text = "\n".join([doc.page_content for doc in context_docs])
+    if send_btn and user_input.strip():
+        # 1) 버튼 누름 → 로딩 시작
+        st.session_state["loading"] = True
 
-        # 4) RAG 체인 실행
-        chain_input = {
-            "context": context_text,
-            "question": user_input,
-            "chat_history": last_500_chars,
-        }
-        answer = rag_chain.invoke(chain_input)
+        with st.spinner("답변 생성중..."):
+            # (A) 사용자 메시지
+            st.session_state["messages"].append({
+                "role": "user",
+                "content": user_input
+            })
 
-        # 5) 어시스턴트 메시지 추가
-        st.session_state["chat_history"].append({"role": "assistant", "content": answer})
+            # (B) 최근 대화 500자
+            entire_chat_text = "".join(m["content"] for m in st.session_state["messages"])
+            last_500_chars = entire_chat_text[-500:]
 
-    # (C) 대화 내역 표시
-    for msg in st.session_state["chat_history"]:
+            # (C) 검색
+            if retriever:
+                context_docs = retriever.get_relevant_documents(user_input)
+                context_text = "\n".join([doc.page_content for doc in context_docs])
+
+                # (D) RAG
+                chain_input = {
+                    "context": context_text,
+                    "question": user_input,
+                    "chat_history": last_500_chars,
+                }
+                answer = rag_chain.invoke(chain_input)
+            else:
+                answer = "인덱싱된 기사 내용이 없습니다."
+
+            # (E) 봇 메시지
+            st.session_state["messages"].append({
+                "role": "assistant",
+                "content": answer
+            })
+
+        # 2) 처리 완료 → 로딩 False
+        st.session_state["loading"] = False
+
+    # 메시지 표시 (key=...)
+    for i, msg in enumerate(st.session_state["messages"]):
         if msg["role"] == "user":
-            st.write(f"**User:** {msg['content']}")
+            message(msg["content"], is_user=True, key=f"user_{i}")
         else:
-            st.write(f"**Assistant:** {msg['content']}")
+            message(msg["content"], is_user=False, key=f"assistant_{i}")
+
 
 if __name__ == "__main__":
     main()
