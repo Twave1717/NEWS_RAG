@@ -5,8 +5,8 @@ import os
 from datetime import datetime, timedelta
 import html
 
-from dotenv import load_dotenv
-load_dotenv()
+#from dotenv import load_dotenv
+#load_dotenv()
 
 # langchain-teddynote
 from langchain_teddynote import logging
