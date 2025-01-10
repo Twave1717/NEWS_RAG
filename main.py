@@ -123,6 +123,15 @@ from webdriver_manager.chrome import ChromeDriverManager
 import os
 
 def crawl_news():
+    """
+    StackOverflow:
+    https://stackoverflow.com/questions/50642308/webdriverexception-unknown-error-devtoolsactiveport-file-doesnt-exist-while-t
+    
+    devtoolsactiveport 관련 오류를 방지하기 위해 
+    권장하는 ChromeOptions를 적용한 버전의 crawl_news 함수 예시입니다.
+    """
+
+    # (1) URL 설정
     target_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
     base_url = (
         "https://finance.naver.com/news/news_list.naver"
@@ -130,48 +139,46 @@ def crawl_news():
         f"&date={target_date}"
     )
 
+    # (2) ChromeOptions 설정 (StackOverflow 권장사항 반영)
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--headless")  # 또는 "--headless=new" 로 변경 가능
+    chrome_options.add_argument("--start-maximized")
+    chrome_options.add_argument("disable-infobars")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--remote-debugging-port=9222")
 
-    # 캐시 디렉토리 초기화
-    webdriver_cache_path = os.path.expanduser("~/.wdm")
-    if os.path.exists(webdriver_cache_path):
-        for root, dirs, files in os.walk(webdriver_cache_path, topdown=False):
-            for name in files:
-                os.remove(os.path.join(root, name))
-            for name in dirs:
-                os.rmdir(os.path.join(root, name))
-
+    # (3) WebDriver 실행
     try:
-        # WebDriver 자동 다운로드
         driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=chrome_options
         )
     except Exception as e:
-        print(f"WebDriver 자동 다운로드 실패: {e}")
-        print("수동 설치된 ChromeDriver 사용 시도 중...")
-
-        # 수동 설치된 WebDriver 경로로 대체
+        # 필요 시, 자동 다운로드 실패 시 수동 경로로 대체 가능
+        st.error(f"WebDriver 실행 실패: {e}")
         driver = webdriver.Chrome(
-            service=Service("/path/to/chromedriver"),  # 여기에 수동 설치된 경로 지정
+            service=Service("/path/to/chromedriver"),  # 수동 설치된 ChromeDriver 경로
             options=chrome_options
         )
 
+    # (4) 기사 수집
     status_placeholder = st.empty()
     all_articles = []
     try:
-        first_page_url = base_url + "&page=1"
+        # 첫 페이지 로딩
+        first_page_url = f"{base_url}&page=1"
         articles, soup = get_news_from_list_page(driver, first_page_url)
         total_pages = get_total_pages(soup)
 
+        # 2 ~ total_pages까지 순회
         for page_num in range(2, total_pages + 1):
             page_url = f"{base_url}&page={page_num}"
             page_articles, _ = get_news_from_list_page(driver, page_url)
             articles.extend(page_articles)
 
+        # 각 기사 본문 상세 확인
         for art in articles:
             get_news_detail(driver, art, status_placeholder=status_placeholder)
             time.sleep(0.05)
