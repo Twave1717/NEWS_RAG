@@ -116,6 +116,12 @@ def get_news_detail(driver, article, status_placeholder=None):
     article["content"] = content
     return article
 
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+import os
+
 def crawl_news():
     target_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
     base_url = (
@@ -129,10 +135,30 @@ def crawl_news():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=chrome_options
-    )
+    # 캐시 디렉토리 초기화
+    webdriver_cache_path = os.path.expanduser("~/.wdm")
+    if os.path.exists(webdriver_cache_path):
+        for root, dirs, files in os.walk(webdriver_cache_path, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+
+    try:
+        # WebDriver 자동 다운로드
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=chrome_options
+        )
+    except Exception as e:
+        print(f"WebDriver 자동 다운로드 실패: {e}")
+        print("수동 설치된 ChromeDriver 사용 시도 중...")
+
+        # 수동 설치된 WebDriver 경로로 대체
+        driver = webdriver.Chrome(
+            service=Service("/path/to/chromedriver"),  # 여기에 수동 설치된 경로 지정
+            options=chrome_options
+        )
 
     status_placeholder = st.empty()
     all_articles = []
@@ -140,7 +166,7 @@ def crawl_news():
         first_page_url = base_url + "&page=1"
         articles, soup = get_news_from_list_page(driver, first_page_url)
         total_pages = get_total_pages(soup)
-        
+
         for page_num in range(2, total_pages + 1):
             page_url = f"{base_url}&page={page_num}"
             page_articles, _ = get_news_from_list_page(driver, page_url)
@@ -155,6 +181,7 @@ def crawl_news():
         status_placeholder.empty()
 
     return articles
+
 
 ##################################################
 # (2) RAG (변경 없음)
