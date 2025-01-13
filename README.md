@@ -1,5 +1,7 @@
 # NEWS_RAG
 
+**해당 프로젝트는 성균관대학교 Co-DeepLearning Project에서 진행되었습니다.**     
+
 **NEWS RAG 챗봇**은 하루 경제 신문 기사를 **RAG(Retrieval-Augmented Generation)** 방식으로 활용해 최신 경제 뉴스를 빠르게 제공합니다.
 
 ## 1. 주요 개념
