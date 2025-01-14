@@ -5,8 +5,8 @@ import os
 from datetime import datetime, timedelta
 import html
 
-#from dotenv import load_dotenv
-#load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # langchain-teddynote
 from langchain_teddynote import logging
@@ -35,8 +35,24 @@ from webdriver_manager.chrome import ChromeDriverManager
 # langchain 최신 버전 기준
 from langchain.schema import Document
 
+
 ##################################################
-# (1) 뉴스 크롤링 로직 (변경 없음)
+# (0) 매일 00:01(=12시1분)에 캐시를 갱신하기 위한 로직
+##################################################
+def refresh_cache_if_1201():
+    """
+    매일 00:01(=12시1분)이 되면 캐시를 초기화하여
+    다음 호출 시 새로 뉴스를 크롤링하도록 합니다.
+    """
+    now = datetime.now()
+    # 시/분이 각각 0,1 이면 cache clear
+    if (now.hour == 0 and now.minute == 1):
+        st.cache_resource.clear()
+        st.experimental_rerun()
+
+
+##################################################
+# (1) 뉴스 크롤링 로직 (기존 코드 유지)
 ##################################################
 def get_total_pages(soup):
     navi_table = soup.find("table", class_="Nnavi")
@@ -93,8 +109,8 @@ def get_news_from_list_page(driver, page_url):
     return articles, soup
 
 def get_news_detail(driver, article, status_placeholder=None):
-    if status_placeholder:
-        status_placeholder.write(f"뉴스 불러오는 중: {article.get('title','(제목없음)')}")
+    # (로딩 메시지 제거: status_placeholder 사용하지 않음)
+    # 글씨들은 바꾸지 않으려고, 함수 인자는 그대로 두되 내부 활용은 생략
     link = article.get("link", "")
     if not link.startswith("http"):
         link = "https://n.news.naver.com" + link
@@ -116,19 +132,14 @@ def get_news_detail(driver, article, status_placeholder=None):
     article["content"] = content
     return article
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-import os
 
+##################################################
+# (1-2) 실제로 뉴스를 크롤링하는 함수
+##################################################
 def crawl_news():
     """
-    StackOverflow:
-    https://stackoverflow.com/questions/50642308/webdriverexception-unknown-error-devtoolsactiveport-file-doesnt-exist-while-t
-    
-    devtoolsactiveport 관련 오류를 방지하기 위해 
-    권장하는 ChromeOptions를 적용한 버전의 crawl_news 함수 예시입니다.
+    크롤링을 수행해, 전날 자정 기준으로 뉴스 기사들을 가져옴.
+    (로컬 Chrome 설치 없이도 가능한 환경이라면 그대로 사용)
     """
 
     # (1) URL 설정
@@ -139,11 +150,11 @@ def crawl_news():
         f"&date={target_date}"
     )
 
-    # (2) ChromeOptions 설정 (StackOverflow 권장사항 반영)
+    # (2) ChromeOptions 설정
     chrome_options = Options()
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--headless")  # 또는 "--headless=new" 로 변경 가능
+    chrome_options.add_argument("--headless")  
     chrome_options.add_argument("--start-maximized")
     chrome_options.add_argument("disable-infobars")
     chrome_options.add_argument("--disable-extensions")
@@ -156,47 +167,39 @@ def crawl_news():
             options=chrome_options
         )
     except Exception as e:
-        # 필요 시, 자동 다운로드 실패 시 수동 경로로 대체 가능
         st.error(f"WebDriver 실행 실패: {e}")
+        # 혹시 자동 설치 실패 시, 수동 경로를 지정
         driver = webdriver.Chrome(
-            service=Service("/path/to/chromedriver"),  # 수동 설치된 ChromeDriver 경로
+            service=Service("/path/to/chromedriver"),
             options=chrome_options
         )
 
     # (4) 기사 수집
-    status_placeholder = st.empty()
     all_articles = []
     try:
-        # 첫 페이지 로딩
         first_page_url = f"{base_url}&page=1"
         articles, soup = get_news_from_list_page(driver, first_page_url)
         total_pages = get_total_pages(soup)
 
-        # 2 ~ total_pages까지 순회
         for page_num in range(2, total_pages + 1):
             page_url = f"{base_url}&page={page_num}"
             page_articles, _ = get_news_from_list_page(driver, page_url)
             articles.extend(page_articles)
 
-        # 각 기사 본문 상세 확인
         for art in articles:
-            get_news_detail(driver, art, status_placeholder=status_placeholder)
+            get_news_detail(driver, art, status_placeholder=None)
             time.sleep(0.05)
-
     finally:
         driver.quit()
-        status_placeholder.empty()
 
     return articles
 
 
 ##################################################
-# (2) RAG (변경 없음)
+# (2) RAG (변경 없음 - 인덱싱)
 ##################################################
 def create_retriever_from_articles(articles, status_placeholder=None):
-    if status_placeholder:
-        status_placeholder.write("인덱싱중...")
-
+    # (로딩 메시지 제거: status_placeholder 사용하지 않음)
     all_text = ""
     for art in articles:
         one_text = f"제목: {art['title']}\n날짜: {art['date']}\n{art.get('content','')}\n"
@@ -209,10 +212,8 @@ def create_retriever_from_articles(articles, status_placeholder=None):
     vectorstore = FAISS.from_documents(splits, OpenAIEmbeddings())
     retriever = vectorstore.as_retriever()
 
-    if status_placeholder:
-        status_placeholder.empty()
-
     return retriever
+
 
 prompt = PromptTemplate.from_template(
     """당신은 질문-답변(Question-Answering)을 수행하는 친절한 AI 어시스턴트입니다.
@@ -249,30 +250,42 @@ rag_chain = (
     | StrOutputParser()
 )
 
+
 ##################################################
-# (3) Streamlit 메인 (streamlit-chat + 버튼 비활성화/로딩)
+# (2-1) 매번 새로 안 하고, "공유 데이터"를 캐시에 저장
+##################################################
+@st.cache_resource
+def get_cached_articles_and_retriever():
+    """
+    - 서버가 실행된 후 최초 1회, 그리고 cache가 비워졌을 때만 실제 크롤링.
+    - 이후에는 동일 객체(articles, retriever) 반환.
+    """
+    articles = crawl_news()
+    retriever = create_retriever_from_articles(articles)
+    return articles, retriever
+
+
+##################################################
+# (3) Streamlit 메인
 ##################################################
 def main():
     st.set_page_config(page_title="미국 증시 챗봇 (Co-RAG)", layout="wide")
     st.title("어제 미국증시 뉴스 챗봇")
 
-    # 로딩 상태를 관리
-    if "loading" not in st.session_state:
-        st.session_state["loading"] = False
+    # 매일 00:01(=12시1분)에 cache를 비우고, 새로 인덱싱하도록
+    refresh_cache_if_1201()
 
-    # 1) 크롤링 & 인덱싱
-    if "articles" not in st.session_state:
-        with st.spinner("뉴스 가져오는 중..."):
-            articles = crawl_news()
-            st.session_state["articles"] = articles
-            st.session_state["retriever"] = create_retriever_from_articles(
-                articles, status_placeholder=st.empty()
-            )
+    # (A) 캐시에 저장된(또는 새로 생성된) articles, retriever 가져오기
+    if "articles" not in st.session_state or "retriever" not in st.session_state:
+        # 처음(서버 구동 후 최초 접근)인 경우나, 세션에서 아직 안 불러온 경우
+        articles, retriever = get_cached_articles_and_retriever()
+        st.session_state["articles"] = articles
+        st.session_state["retriever"] = retriever
 
     articles = st.session_state["articles"]
     retriever = st.session_state["retriever"]
 
-    # ------------------- 카드뷰 -------------------
+    # ------------------- 카드뷰 (토글) -------------------
     with st.expander("불러온 뉴스 목록 (펼치기/접기)", expanded=False):
         st.write(f"불러온 기사 수: {len(articles)}개")
 
@@ -335,8 +348,6 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ------------------- streamlit-chat -------------------
-    from streamlit_chat import message
-
     st.subheader("뉴스 기반 챗봇")
 
     if "messages" not in st.session_state:
@@ -345,48 +356,45 @@ def main():
     user_input = st.text_input("질문을 입력하세요", "")
 
     # Send 버튼: 로딩중이면 disabled=True
-    send_btn = st.button("Send", disabled=st.session_state["loading"])
+    send_btn = st.button("Send", disabled=st.session_state["loading"] if "loading" in st.session_state else False)
 
     if send_btn and user_input.strip():
-        # 1) 버튼 누름 → 로딩 시작
         st.session_state["loading"] = True
 
-        with st.spinner("답변 생성중..."):
-            # (A) 사용자 메시지
-            st.session_state["messages"].append({
-                "role": "user",
-                "content": user_input
-            })
+        # (A) 사용자 메시지
+        st.session_state["messages"].append({
+            "role": "user",
+            "content": user_input
+        })
 
-            # (B) 최근 대화 500자
-            entire_chat_text = "".join(m["content"] for m in st.session_state["messages"])
-            last_500_chars = entire_chat_text[-500:]
+        # (B) 최근 대화 500자
+        entire_chat_text = "".join(m["content"] for m in st.session_state["messages"])
+        last_500_chars = entire_chat_text[-500:]
 
-            # (C) 검색
-            if retriever:
-                context_docs = retriever.get_relevant_documents(user_input)
-                context_text = "\n".join([doc.page_content for doc in context_docs])
+        # (C) 검색
+        if retriever:
+            context_docs = retriever.get_relevant_documents(user_input)
+            context_text = "\n".join([doc.page_content for doc in context_docs])
 
-                # (D) RAG
-                chain_input = {
-                    "context": context_text,
-                    "question": user_input,
-                    "chat_history": last_500_chars,
-                }
-                answer = rag_chain.invoke(chain_input)
-            else:
-                answer = "인덱싱된 기사 내용이 없습니다."
+            # (D) RAG
+            chain_input = {
+                "context": context_text,
+                "question": user_input,
+                "chat_history": last_500_chars,
+            }
+            answer = rag_chain.invoke(chain_input)
+        else:
+            answer = "인덱싱된 기사 내용이 없습니다."
 
-            # (E) 봇 메시지
-            st.session_state["messages"].append({
-                "role": "assistant",
-                "content": answer
-            })
+        # (E) 봇 메시지
+        st.session_state["messages"].append({
+            "role": "assistant",
+            "content": answer
+        })
 
-        # 2) 처리 완료 → 로딩 False
         st.session_state["loading"] = False
 
-    # 메시지 표시 (key=...)
+    # 메시지 표시
     for i, msg in enumerate(st.session_state["messages"]):
         if msg["role"] == "user":
             message(msg["content"], is_user=True, key=f"user_{i}")
