@@ -69,7 +69,7 @@ def fetch_news_api():
     date_to_str = end_date_dt.strftime("%Y-%m-%d")
 
     # .env 파일에서 API_KEY 불러오기
-    API_KEY = os.getenv("deepsearch_key")
+    API_KEY = "5d1ca2322d974c129b89b2937f736bfa"
     if not API_KEY:
         st.error("DEEPSEARCH_API_KEY 환경 변수가 설정되지 않았습니다.")
         return []
@@ -190,8 +190,6 @@ prompt = PromptTemplate.from_template(
 {chat_history}
 
 당신의 임무는, 주어진 뉴스 문맥(context)을 사용하여 질문(question)에 답변하는 것입니다.
-만약 해당 문맥으로부터 답을 찾을 수 없다면
-"주어진 정보에서 질문에 대한 정보를 찾을 수 없습니다" 라고 답하세요.
 
 # Question:
 {question}
@@ -329,7 +327,6 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ------------------- streamlit-chat -------------------
-    st.subheader("뉴스 기반 챗봇")
 
     if "messages" not in st.session_state:
         st.session_state["messages"] = []
