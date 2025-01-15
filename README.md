@@ -1,4 +1,4 @@
-![header](https://capsule-render.vercel.app/api?type=wave&color=auto&height=300&section=header&text=capsule%20render&fontSize=90)
+![header](https://capsule-render.vercel.app/api?type=Rect&color=auto&height=300&section=header&text=2024%20SKKU%20미국증시챗봇&fontSize=90)
 # 🗞️NEWS_RAG
 
 🚀 데모 페이지: [https://corag-news-rag.streamlit.app/](https://corag-news-rag.streamlit.app/)
