@@ -1,5 +1,5 @@
 
-![rect](https://capsule-render.vercel.app/api?type=rect&color=gradient&text=2024%20SKKU&fontAlign=30&fontSize=30&textBg=true&desc=%20미국증시챗봇%27&descAlign=60&descAlignY=50)
+![rect](https://capsule-render.vercel.app/api?type=rect&color=gradient&text=2024%20SKKU&fontAlign=30&fontSize=50&textBg=true&desc=%20미국증시챗봇%27&descAlign=60&descAlignY=50)
 # 🗞️NEWS_RAG
 
 
