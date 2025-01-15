@@ -3,18 +3,17 @@ from streamlit_chat import message  # streamlit-chat 사용
 import time
 import os
 from datetime import datetime, timedelta
-import html
+
+import requests  # API 요청을 위해 추가
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv()  # .env 파일 로드
 
 # langchain-teddynote
 from langchain_teddynote import logging
 logging.langsmith("CH12-RAG")
 
-import bs4
 from langchain import hub
-# (버전에 따라) langchain.text_splitter 사용 필요성 있음
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
@@ -22,17 +21,6 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-# Selenium 관련
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from bs4 import BeautifulSoup
-from webdriver_manager.chrome import ChromeDriverManager
-
-# langchain 최신 버전 기준
 from langchain.schema import Document
 
 
@@ -42,7 +30,7 @@ from langchain.schema import Document
 def refresh_cache_if_1201():
     """
     매일 00:01(=12시1분)이 되면 캐시를 초기화하여
-    다음 호출 시 새로 뉴스를 크롤링하도록 합니다.
+    다음 호출 시 새로 뉴스를 크롤링(=API로 가져오기)하도록 합니다.
     """
     now = datetime.now()
     # 시/분이 각각 0,1 이면 cache clear
@@ -52,166 +40,146 @@ def refresh_cache_if_1201():
 
 
 ##################################################
-# (1) 뉴스 크롤링 로직 (기존 코드 유지)
+# (1) DeepSearch API로 뉴스 불러오기 (Selenium 제거)
 ##################################################
-def get_total_pages(soup):
-    navi_table = soup.find("table", class_="Nnavi")
-    if not navi_table:
-        return 1
-    page_links = soup.find_all("a")
-    max_page = 1
-    for link_tag in page_links:
-        href = link_tag.get("href", "")
-        if "page=" in href:
-            try:
-                page_str = href.split("page=")[1].split("&")[0]
-                page_num = int(page_str)
-                if page_num > max_page:
-                    max_page = page_num
-            except:
-                continue
-    return max_page
-
-def get_news_from_list_page(driver, page_url):
-    driver.get(page_url)
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "realtimeNewsList"))
-        )
-    except:
-        return [], None
-
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    realtime_news_list = soup.find("ul", class_="realtimeNewsList")
-    
-    articles = []
-    if realtime_news_list:
-        li_tags = realtime_news_list.find_all("li", class_="newsList")
-        for li in li_tags:
-            dl_tags = li.find_all("dl")
-            for dl in dl_tags:
-                dd_subjects = dl.find_all("dd", class_="articleSubject")
-                dd_summaries = dl.find_all("dd", class_="articleSummary")
-                
-                for subject_dd, summary_dd in zip(dd_subjects, dd_summaries):
-                    a_tag = subject_dd.find("a")
-                    title = a_tag.get_text(strip=True) if a_tag else "제목 없음"
-                    link  = a_tag["href"] if a_tag else "링크 없음"
-                    
-                    date_span = summary_dd.find("span", class_="wdate")
-                    date_ = date_span.get_text(strip=True) if date_span else "날짜 없음"
-                    
-                    articles.append({
-                        "title": title,
-                        "link": link,
-                        "date": date_
-                    })
-    return articles, soup
-
-def get_news_detail(driver, article, status_placeholder=None):
-    # (로딩 메시지 제거: status_placeholder 사용하지 않음)
-    # 글씨들은 바꾸지 않으려고, 함수 인자는 그대로 두되 내부 활용은 생략
-    link = article.get("link", "")
-    if not link.startswith("http"):
-        link = "https://n.news.naver.com" + link
-    article["URL"] = link
-
-    driver.get(link)
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "dic_area"))
-        )
-    except:
-        article["content"] = "본문 로딩 실패"
-        return article
-    
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    content_tag = soup.find("article", id="dic_area")
-    content = content_tag.get_text("\n", strip=True) if content_tag else "본문 없음"
-    
-    article["content"] = content
-    return article
-
-
-##################################################
-# (1-2) 실제로 뉴스를 크롤링하는 함수
-##################################################
-def crawl_news():
+def fetch_news_api():
     """
-    크롤링을 수행해, 전날 자정 기준으로 뉴스 기사들을 가져옴.
-    (로컬 Chrome 설치 없이도 가능한 환경이라면 그대로 사용)
+    전날부터 1주일치(즉, 어제 날짜 ~ 7일 전 날짜) 뉴스 기사를
+    DeepSearch API로 모두 불러와 리스트로 반환합니다.
+
+    반환 형식:
+    [
+      {
+        "id": ...,
+        "title": ...,
+        "title_ko": ...,
+        "summary": ...,
+        "summary_ko": ...,
+        "content_url": ...,
+        "published_at": ...,
+        ...
+      },
+      ...
+    ]
     """
+    # 날짜 설정 (어제 ~ 7일 전)
+    end_date_dt = datetime.now() - timedelta(days=1)
+    start_date_dt = datetime.now() - timedelta(days=7)
+    date_from_str = start_date_dt.strftime("%Y-%m-%d")
+    date_to_str = end_date_dt.strftime("%Y-%m-%d")
 
-    # (1) URL 설정
-    target_date = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-    base_url = (
-        "https://finance.naver.com/news/news_list.naver"
-        "?mode=LSS3D&section_id=101&section_id2=258&section_id3=403"
-        f"&date={target_date}"
-    )
+    # .env 파일에서 API_KEY 불러오기
+    API_KEY = os.getenv("deepsearch_key")
+    if not API_KEY:
+        st.error("DEEPSEARCH_API_KEY 환경 변수가 설정되지 않았습니다.")
+        return []
 
-    # (2) ChromeOptions 설정
-    chrome_options = Options()
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--headless")  
-    chrome_options.add_argument("--start-maximized")
-    chrome_options.add_argument("disable-infobars")
-    chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--remote-debugging-port=9222")
+    BASE_URL = "https://api-v2.deepsearch.com/v1/global-articles/economy"
+    page_size = 100
 
-    # (3) WebDriver 실행
-    try:
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
-        )
-    except Exception as e:
-        st.error(f"WebDriver 실행 실패: {e}")
-        # 혹시 자동 설치 실패 시, 수동 경로를 지정
-        driver = webdriver.Chrome(
-            service=Service("/path/to/chromedriver"),
-            options=chrome_options
-        )
-
-    # (4) 기사 수집
+    # articles 결과를 담을 리스트
     all_articles = []
-    try:
-        first_page_url = f"{base_url}&page=1"
-        articles, soup = get_news_from_list_page(driver, first_page_url)
-        total_pages = get_total_pages(soup)
 
-        for page_num in range(2, total_pages + 1):
-            page_url = f"{base_url}&page={page_num}"
-            page_articles, _ = get_news_from_list_page(driver, page_url)
-            articles.extend(page_articles)
+    # 우선 1페이지를 호출하여 total_pages 확인
+    page = 1
+    url = (
+        f"{BASE_URL}?api_key={API_KEY}"
+        f"&date_from={date_from_str}&date_to={date_to_str}"
+        f"&page={page}&page_size={page_size}"
+    )
+    resp = requests.get(url)
+    if resp.status_code != 200:
+        st.error(f"API 호출 실패: {resp.status_code}")
+        return []
 
-        for art in articles:
-            get_news_detail(driver, art, status_placeholder=None)
-            time.sleep(0.05)
-    finally:
-        driver.quit()
+    data_json = resp.json()
+    total_pages = data_json.get("total_pages", 1)
+    items = data_json.get("data", [])
+    all_articles.extend(items)
 
-    return articles
+    # 2페이지 ~ total_pages까지 반복
+    for page_num in range(2, total_pages + 1):
+        url = (
+            f"{BASE_URL}?api_key={API_KEY}"
+            f"&date_from={date_from_str}&date_to={date_to_str}"
+            f"&page={page_num}&page_size={page_size}"
+        )
+        resp = requests.get(url)
+        if resp.status_code == 200:
+            data_json = resp.json()
+            items = data_json.get("data", [])
+            all_articles.extend(items)
+        else:
+            st.warning(f"페이지 {page_num} 호출 실패: {resp.status_code}")
+            break
+
+    return all_articles
 
 
 ##################################################
-# (2) RAG (변경 없음 - 인덱싱)
+# (2) RAG (인덱싱에 사용)
 ##################################################
-def create_retriever_from_articles(articles, status_placeholder=None):
-    # (로딩 메시지 제거: status_placeholder 사용하지 않음)
-    all_text = ""
+def create_retriever_from_articles(articles):
+    """
+    가져온 articles를 바탕으로 2가지 문서를 만든 뒤,
+    - (문서1) 모든 기사내용(영문/한글요약/본문url 등)을 합쳐서 하나의 큰 텍스트로
+    - (문서2) "YYYY년 MM월 DD일 증시 요약" + 기사제목들만 모아 놓은 텍스트
+
+    두 문서를 합쳐서 하나의 retriever를 생성합니다.
+    """
+    # (A) 모든 기사 내용을 합치는 문서
+    all_text_list = []
     for art in articles:
-        one_text = f"제목: {art['title']}\n날짜: {art['date']}\n{art.get('content','')}\n"
-        all_text += one_text + "\n\n"
+        title = art.get("title", "")
+        title_ko = art.get("title_ko", "")
+        summary = art.get("summary", "")
+        summary_ko = art.get("summary_ko", "")
+        pub_at = art.get("published_at", "")
+        content_url = art.get("content_url", "")
+        reason = art.get("reason", "")
 
-    docs = [Document(page_content=all_text)]
+        one_text = (
+            f"[기사ID: {art.get('id')}]\n\n"
+            f"영문제목: {title}\n"
+            # f"한글제목: {title_ko}\n"  # 한글 제목 제외
+            f"발행일: {pub_at}\n"
+            # f"내용URL: {content_url}\n"  # 내용 URL 제외
+            f"영문요약: {summary}\n"
+            # f"한글요약: {summary_ko}\n"  # 한글 요약 제외
+            f"reason: {reason}\n\n"
+            "----------------------------"
+        )
+
+        all_text_list.append(one_text)
+
+    doc_text_1 = "\n".join(all_text_list)
+
+    # (B) "YYYY년 MM월 DD일 증시 요약" 형태로 기사제목들만 모은 문서
+    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    header = f"{today_str} 증시 요약\n\n"
+    titles_only_list = []
+    for art in articles:
+        t_ko = art.get("title_ko", "")
+        t_en = art.get("title", "")
+        if t_ko:
+            titles_only_list.append(f"- {t_ko}")
+        else:
+            titles_only_list.append(f"- {t_en}")
+
+    doc_text_2 = header + "\n".join(titles_only_list) + "\n"
+
+    # (C) 두 문서를 하나의 리스트로
+    docs = [
+        Document(page_content=doc_text_1),
+        Document(page_content=doc_text_2),
+    ]
+
+    # (D) 텍스트 분할 & 벡터 인덱스 생성
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     splits = text_splitter.split_documents(docs)
 
     vectorstore = FAISS.from_documents(splits, OpenAIEmbeddings())
     retriever = vectorstore.as_retriever()
-
     return retriever
 
 
@@ -221,7 +189,7 @@ prompt = PromptTemplate.from_template(
 아래는 지금까지의 (최근) 대화 내용 일부입니다:
 {chat_history}
 
-당신의 임무는, 주어진 뉴스 문맥(context) 을 사용하여 질문(question)에 답변하는 것입니다.
+당신의 임무는, 주어진 뉴스 문맥(context)을 사용하여 질문(question)에 답변하는 것입니다.
 만약 해당 문맥으로부터 답을 찾을 수 없다면
 "주어진 정보에서 질문에 대한 정보를 찾을 수 없습니다" 라고 답하세요.
 
@@ -234,11 +202,7 @@ prompt = PromptTemplate.from_template(
 # Answer:"""
 )
 
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from langchain_openai import ChatOpenAI
-
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
+llm = ChatOpenAI(model_name="gpt-4", temperature=0)  # 모델 이름 수정
 rag_chain = (
     {
         "context": RunnablePassthrough(),
@@ -257,11 +221,11 @@ rag_chain = (
 @st.cache_resource
 def get_cached_articles_and_retriever():
     """
-    - 서버가 실행된 후 최초 1회, 그리고 cache가 비워졌을 때만 실제 크롤링.
+    - 서버가 실행된 후 최초 1회, 그리고 cache가 비워졌을 때만 실제 API에서 기사 불러오기(fetch_news_api).
     - 이후에는 동일 객체(articles, retriever) 반환.
     """
-    articles = crawl_news()
-    retriever = create_retriever_from_articles(articles)
+    articles = fetch_news_api()  # 1주일치 뉴스 기사 불러오기
+    retriever = create_retriever_from_articles(articles)  # 문서화 + 벡터 DB 생성
     return articles, retriever
 
 
@@ -269,9 +233,20 @@ def get_cached_articles_and_retriever():
 # (3) Streamlit 메인
 ##################################################
 def main():
-    st.set_page_config(page_title="미국 증시 챗봇 (Co-RAG)", layout="wide")
-    st.title("어제 미국증시 뉴스 챗봇")
-
+    st.set_page_config(page_title="미국 증시 뉴스 챗봇", layout="wide")
+    
+    # 제목 설정
+    st.title("미국 증시 뉴스 챗봇")
+    
+    # 시작일과 끝나는 날짜 계산
+    end_date_dt = datetime.now() - timedelta(days=1)
+    start_date_dt = datetime.now() - timedelta(days=7)
+    start_date_str = start_date_dt.strftime("%Y년 %m월 %d일")
+    end_date_str = end_date_dt.strftime("%Y년 %m월 %d일")
+    
+    # 서브타이틀 추가 (웃는 이모티콘 포함)
+    st.markdown(f"😊 **{start_date_str} ~ {end_date_str}까지의 뉴스를 통해 증시를 알려드려요!**")
+    
     # 매일 00:01(=12시1분)에 cache를 비우고, 새로 인덱싱하도록
     refresh_cache_if_1201()
 
@@ -334,13 +309,19 @@ def main():
 
         st.markdown('<div class="horizontal-scroll">', unsafe_allow_html=True)
         for art in articles:
-            url = art.get("URL", "#")
-            title = art.get("title", "제목 없음")
-            date_ = art.get("date", "날짜 없음")
+            url = art.get("content_url", "#")
+            title_en = art.get("title", "제목 없음")
+            title_ko = art.get("title_ko", "")
+            if title_ko.strip():
+                display_title = title_ko
+            else:
+                display_title = title_en
+
+            date_ = art.get("published_at", "날짜 없음")
 
             card_html = f"""
             <a class="news-card" href="{url}" target="_blank">
-                <span class="title">{title}</span>
+                <span class="title">{display_title}</span>
                 <span class="date">({date_})</span>
             </a>
             """
@@ -356,7 +337,7 @@ def main():
     user_input = st.text_input("질문을 입력하세요", "")
 
     # Send 버튼: 로딩중이면 disabled=True
-    send_btn = st.button("Send", disabled=st.session_state["loading"] if "loading" in st.session_state else False)
+    send_btn = st.button("Send", disabled=st.session_state.get("loading", False))
 
     if send_btn and user_input.strip():
         st.session_state["loading"] = True
